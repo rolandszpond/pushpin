@@ -1,0 +1,18 @@
+{
+  "name": "pushpin",
+  "version": "0.1.0",
+  "description": "Self-hosted pub/sub service — your own Pusher",
+  "scripts": {
+    "dev": "bun run --watch client/src/index.ts",
+    "start": "bun run client/src/index.ts"
+  },
+  "dependencies": {
+    "elysia": "latest",
+    "@elysiajs/cors": "latest",
+    "@upstash/redis": "latest",
+    "nanoid": "latest"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+}

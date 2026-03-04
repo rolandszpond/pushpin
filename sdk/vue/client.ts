@@ -1,0 +1,240 @@
+/**
+ * Pushpin Client SDK (Vue / vanilla JS)
+ *
+ * import { PushpinClient } from 'pushpin-client'
+ *
+ * const pushpin = new PushpinClient({
+ *   serverUrl: 'wss://your-pushpin.do.app',
+ *   subscribeKey: 'sk_...',
+ * })
+ *
+ * // Vanilla
+ * pushpin.channel('orders').on('order.created', (data) => console.log(data))
+ *
+ * // Vue composable
+ * const { on, status, messages } = usePushpinChannel('orders', { client: pushpin })
+ */
+
+import { ref, onUnmounted, type Ref } from 'vue'
+
+// ─── Types ─────────────────────────────────────────────────────────────────────
+
+type WireMessage = {
+    event: string
+    data: unknown
+    channel: string
+    appId: string
+    timestamp: number
+}
+
+type EventHandler = (data: unknown) => void
+type StatusType = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+type ClientOptions = {
+    serverUrl: string
+    subscribeKey: string
+    /** Override WS path. Default: '/app' */
+    wsPath?: string
+    reconnectDelay?: number
+    maxReconnectAttempts?: number
+}
+
+// ─── Channel ───────────────────────────────────────────────────────────────────
+
+export class PushpinChannel {
+    private handlers = new Map<string, Set<EventHandler>>()
+
+    constructor(public readonly name: string) {}
+
+    on(event: string, handler: EventHandler): this {
+        if (!this.handlers.has(event)) this.handlers.set(event, new Set())
+        this.handlers.get(event)!.add(handler)
+        return this
+    }
+
+    off(event: string, handler?: EventHandler): this {
+        if (!handler) this.handlers.delete(event)
+        else this.handlers.get(event)?.delete(handler)
+        return this
+    }
+
+    /** @internal */
+    _dispatch(event: string, data: unknown) {
+        this.handlers.get(event)?.forEach((h) => h(data))
+        // Wildcard fires for every event
+        this.handlers.get('*')?.forEach((h) => h({ event, data }))
+    }
+}
+
+// ─── Client ────────────────────────────────────────────────────────────────────
+
+type ChannelEntry = {
+    channel: PushpinChannel
+    ws: WebSocket | null
+    status: StatusType
+    attempts: number
+    intentionalClose: boolean
+}
+
+export class PushpinClient {
+    private baseUrl: string
+    private subscribeKey: string
+    private wsPath: string
+    private reconnectDelay: number
+    private maxReconnectAttempts: number
+
+    private channels = new Map<string, ChannelEntry>()
+
+    constructor({
+        serverUrl,
+        subscribeKey,
+        wsPath = '/app',
+        reconnectDelay = 3000,
+        maxReconnectAttempts = 10,
+    }: ClientOptions) {
+        this.baseUrl = serverUrl.replace(/\/$/, '').replace(/^http/, 'ws')
+        this.subscribeKey = subscribeKey
+        this.wsPath = wsPath
+        this.reconnectDelay = reconnectDelay
+        this.maxReconnectAttempts = maxReconnectAttempts
+    }
+
+    /** Subscribe to a channel */
+    channel(name: string): PushpinChannel {
+        if (this.channels.has(name)) {
+            return this.channels.get(name)!.channel
+        }
+
+        const channel = new PushpinChannel(name)
+        const entry: ChannelEntry = {
+            channel,
+            ws: null,
+            status: 'disconnected',
+            attempts: 0,
+            intentionalClose: false,
+        }
+        this.channels.set(name, entry)
+        this._connect(name)
+        return channel
+    }
+
+    /** Get the current connection status for a channel */
+    getStatus(name: string): StatusType {
+        return this.channels.get(name)?.status ?? 'disconnected'
+    }
+
+    /** Disconnect from a specific channel */
+    leave(name: string) {
+        const entry = this.channels.get(name)
+        if (!entry) return
+        entry.intentionalClose = true
+        entry.ws?.close()
+        this.channels.delete(name)
+    }
+
+    /** Disconnect all channels */
+    disconnect() {
+        for (const name of [...this.channels.keys()]) this.leave(name)
+    }
+
+    private _connect(name: string) {
+        const entry = this.channels.get(name)
+        if (!entry) return
+
+        const url = `${this.baseUrl}${this.wsPath}/${this.subscribeKey}?channel=${encodeURIComponent(name)}`
+        const ws = new WebSocket(url)
+        entry.ws = ws
+        entry.status = 'connecting'
+
+        ws.onopen = () => {
+            entry.status = 'connected'
+            entry.attempts = 0
+        }
+
+        ws.onmessage = (e) => {
+            try {
+                const msg: WireMessage = JSON.parse(e.data)
+                // Skip internal handshake
+                if (msg.event === 'pushpin:connected') return
+                entry.channel._dispatch(msg.event, msg.data)
+            } catch {
+                // ignore malformed messages
+            }
+        }
+
+        ws.onerror = () => {
+            entry.status = 'error'
+        }
+
+        ws.onclose = () => {
+            entry.status = 'disconnected'
+            if (entry.intentionalClose || !this.channels.has(name)) return
+
+            const max = this.maxReconnectAttempts
+            if (max > 0 && entry.attempts >= max) {
+                console.warn(`[pushpin] channel "${name}" max reconnect attempts reached`)
+                return
+            }
+
+            entry.attempts++
+            const delay = Math.min(this.reconnectDelay * entry.attempts, 30_000)
+            setTimeout(() => this._connect(name), delay)
+        }
+    }
+}
+
+// ─── Vue composable ────────────────────────────────────────────────────────────
+
+type UsePushpinChannelOptions = {
+    client: PushpinClient
+}
+
+type UsePushpinChannelReturn = {
+    on: (event: string, handler: EventHandler) => void
+    off: (event: string, handler?: EventHandler) => void
+    status: Ref<StatusType>
+    messages: Ref<Array<{ event: string; data: unknown; timestamp: number }>>
+}
+
+export function usePushpinChannel(
+    channelName: string,
+    { client }: UsePushpinChannelOptions,
+): UsePushpinChannelReturn {
+    const ch = client.channel(channelName)
+    const status = ref<StatusType>('connecting')
+    const messages = ref<Array<{ event: string; data: unknown; timestamp: number }>>([])
+
+    const registered: Array<{ event: string; handler: EventHandler }> = []
+
+    function on(event: string, handler: EventHandler) {
+        ch.on(event, handler)
+        registered.push({ event, handler })
+    }
+
+    function off(event: string, handler?: EventHandler) {
+        ch.off(event, handler)
+    }
+
+    // Track all messages + status reactively
+    on('pushpin:connected', () => { status.value = 'connected' })
+    on('*', (payload: any) => {
+        messages.value = [
+            { event: payload.event, data: payload.data, timestamp: Date.now() },
+            ...messages.value,
+        ].slice(0, 100)
+    })
+
+    // Poll status (lightweight — only while component is mounted)
+    const statusInterval = setInterval(() => {
+        status.value = client.getStatus(channelName)
+    }, 1000)
+
+    onUnmounted(() => {
+        clearInterval(statusInterval)
+        for (const { event, handler } of registered) {
+            ch.off(event, handler)
+        }
+    })
+
+    return { on, off, status, messages }
+}
