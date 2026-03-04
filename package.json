@@ -4,7 +4,8 @@
   "description": "Self-hosted pub/sub service — your own Pusher",
   "scripts": {
     "dev": "bun run --watch client/src/index.ts",
-    "start": "bun run client/src/index.ts"
+    "build": "bun build client/src/index.ts --outdir dist --target bun",
+    "start": "bun run dist/index.js"
   },
   "dependencies": {
     "elysia": "latest",
