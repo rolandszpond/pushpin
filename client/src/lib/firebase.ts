@@ -4,7 +4,7 @@ import { getDatabase, ref, push } from 'firebase/database'
 const firebaseConfig = {
     apiKey: "AIzaSyAPqdro8kgOvWBtneM8w6yw8ALtK-EHNnM",
     authDomain: "roland-szpond-b6cf7.firebaseapp.com",
-    databaseURL: "https://roland-szpond-b6cf7.firebaseio.com",
+    databaseURL: "https://pushpin-test.firebaseio.com",
     projectId: "roland-szpond-b6cf7",
     storageBucket: "roland-szpond-b6cf7.firebasestorage.app",
     messagingSenderId: "626534470214",
