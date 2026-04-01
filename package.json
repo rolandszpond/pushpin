@@ -8,9 +8,10 @@
     "start": "bun run dist/index.js"
   },
   "dependencies": {
-    "elysia": "latest",
     "@elysiajs/cors": "latest",
     "@upstash/redis": "latest",
+    "elysia": "latest",
+    "firebase": "^12.11.0",
     "nanoid": "latest"
   },
   "devDependencies": {
