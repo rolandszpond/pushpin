@@ -1,6 +1,7 @@
 import Elysia, { t } from 'elysia'
 import { resolveApp } from '../middleware/resolve-app'
 import { trackConnect, trackDisconnect } from '../lib/registry'
+import { trackMonthlyConnect } from '../lib/store'
 import type { WireMessage } from '../types'
 import { nanoid } from 'nanoid'
 
@@ -44,6 +45,7 @@ export const wsRoute = new Elysia()
             ws.subscribe(topic)
 
             trackConnect(app.id, channel)
+            trackMonthlyConnect(app.id)
 
             ws.send(JSON.stringify({
                 event: 'pushpin:connected',

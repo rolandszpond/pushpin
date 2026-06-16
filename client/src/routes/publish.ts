@@ -1,7 +1,7 @@
 import Elysia, { t } from 'elysia'
 import { resolveApp } from '../middleware/resolve-app'
 import type { WireMessage } from '../types'
-import type { App } from '../lib/store'
+import { trackMonthlyPublish, logMessage, type App } from '../lib/store'
 
 function fireWebhook(app: App, message: WireMessage, delivered: number) {
     if (!app.webhookUrl) return
@@ -58,6 +58,8 @@ export const publishRoute = new Elysia()
             const topic = `${app.id}:${channel}`
             const delivered = server?.publish(topic, JSON.stringify(message)) ?? 0
             fireWebhook(app, message, delivered)
+            trackMonthlyPublish(app.id)
+            logMessage({ appId: app.id, channel, event, data: data ?? null, timestamp: message.timestamp, delivered })
 
             return { ok: true, delivered }
         },
@@ -97,6 +99,8 @@ export const publishRoute = new Elysia()
                 const topic = `${app.id}:${channel}`
                 const delivered = server?.publish(topic, JSON.stringify(message)) ?? 0
                 fireWebhook(app, message, delivered)
+                trackMonthlyPublish(app.id)
+                logMessage({ appId: app.id, channel, event, data: data ?? null, timestamp: message.timestamp, delivered })
                 return { channel, event, delivered }
             })
 

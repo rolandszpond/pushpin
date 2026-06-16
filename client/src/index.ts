@@ -1,8 +1,10 @@
 import { Elysia } from 'elysia'
 import { cors } from '@elysiajs/cors'
+import { cron } from '@elysiajs/cron'
 import { wsRoute } from './routes/ws'
 import { publishRoute } from './routes/publish'
 import { adminRoute } from './routes/admin'
+import { pruneOldLogs } from './lib/store'
 
 const PORT = Number(process.env.PORT ?? 3000)
 
@@ -18,6 +20,12 @@ const app = new Elysia()
         version: '0.1.0',
         status: 'ok',
         timestamp: Date.now(),
+    }))
+
+    .use(cron({
+        name: 'prune-message-log',
+        pattern: '0 0 * * *', // daily at midnight
+        run: pruneOldLogs,
     }))
 
     // Routes

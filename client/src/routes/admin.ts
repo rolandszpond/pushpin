@@ -1,5 +1,5 @@
 import Elysia, { t } from 'elysia'
-import { createApp, listApps, getAppById, updateApp, deleteApp } from '../lib/store'
+import { createApp, listApps, getAppById, updateApp, deleteApp, getMonthlyUsage, getAllMonthlyUsage, getRecentMessages } from '../lib/store'
 import { getStats, getAllStats } from '../lib/registry'
 
 const adminAuth = (headers: Record<string, string | undefined>, set: any) => {
@@ -16,10 +16,9 @@ export const adminRoute = new Elysia({ prefix: '/admin' })
     // ── Create app ──────────────────────────────────────────────────────────
     .post(
         '/apps',
-        async ({ body, headers, set }) => {
+        ({ body, headers, set }) => {
             if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-
-            const app = await createApp(body.name)
+            const app = createApp(body.name)
             return { ok: true, app }
         },
         {
@@ -30,18 +29,15 @@ export const adminRoute = new Elysia({ prefix: '/admin' })
     )
 
     // ── List apps ───────────────────────────────────────────────────────────
-    .get('/apps', async ({ headers, set }) => {
+    .get('/apps', ({ headers, set }) => {
         if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-
-        const apps = await listApps()
-        return { ok: true, apps }
+        return { ok: true, apps: listApps() }
     })
 
     // ── Get app ─────────────────────────────────────────────────────────────
-    .get('/apps/:id', async ({ params, headers, set }) => {
+    .get('/apps/:id', ({ params, headers, set }) => {
         if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-
-        const app = await getAppById(params.id)
+        const app = getAppById(params.id)
         if (!app) { set.status = 404; return { ok: false, error: 'Not found' } }
         return { ok: true, app }
     })
@@ -49,10 +45,9 @@ export const adminRoute = new Elysia({ prefix: '/admin' })
     // ── Update app (set/clear webhook) ──────────────────────────────────────
     .patch(
         '/apps/:id',
-        async ({ params, body, headers, set }) => {
+        ({ params, body, headers, set }) => {
             if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-
-            const app = await updateApp(params.id, { webhookUrl: body.webhookUrl })
+            const app = updateApp(params.id, { webhookUrl: body.webhookUrl })
             if (!app) { set.status = 404; return { ok: false, error: 'Not found' } }
             return { ok: true, app }
         },
@@ -64,22 +59,37 @@ export const adminRoute = new Elysia({ prefix: '/admin' })
     )
 
     // ── Delete app ──────────────────────────────────────────────────────────
-    .delete('/apps/:id', async ({ params, headers, set }) => {
+    .delete('/apps/:id', ({ params, headers, set }) => {
         if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-
-        const deleted = await deleteApp(params.id)
+        const deleted = deleteApp(params.id)
         if (!deleted) { set.status = 404; return { ok: false, error: 'Not found' } }
         return { ok: true }
     })
 
-    // ── Stats: all apps ─────────────────────────────────────────────────────
+    // ── Live connection stats ────────────────────────────────────────────────
     .get('/stats', ({ headers, set }) => {
         if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
         return { ok: true, stats: getAllStats() }
     })
 
-    // ── Stats: single app ───────────────────────────────────────────────────
     .get('/stats/:appId', ({ params, headers, set }) => {
         if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
         return { ok: true, stats: getStats(params.appId) }
+    })
+
+    // ── Monthly usage ────────────────────────────────────────────────────────
+    .get('/usage', ({ headers, set }) => {
+        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
+        return { ok: true, usage: getAllMonthlyUsage() }
+    })
+
+    .get('/usage/:appId', ({ params, headers, set }) => {
+        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
+        return { ok: true, usage: getMonthlyUsage(params.appId) }
+    })
+
+    // ── Recent message log ───────────────────────────────────────────────────
+    .get('/logs/:appId', ({ params, headers, set }) => {
+        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
+        return { ok: true, messages: getRecentMessages(params.appId) }
     })

@@ -6,7 +6,7 @@ Your own self-hosted pub/sub service. Like Pusher, but you own it.
 
 ```
 Any backend  ──→  POST /publish  ──→  Pushpin Server  ──→  WebSocket clients
-                  (publishKey)      (Elysia + Bun + Redis)   (subscribeKey)
+                  (publishKey)      (Elysia + Bun + SQLite)  (subscribeKey)
                                            │
                                            └──→  Webhook (optional, per app)
 ```
@@ -59,7 +59,7 @@ curl -X POST http://localhost:3000/admin/apps \
 
 ---
 
-## Publishing (Firebase Cloud Functions / backends)
+## Publishing (backends)
 
 ```ts
 import { PushpinPublisher } from './sdk/js/publisher'
@@ -145,8 +145,11 @@ All admin routes require `x-admin-secret` header.
 | GET | `/admin/apps/:id` | Get app details |
 | PATCH | `/admin/apps/:id` | Update app (set/clear webhook URL) |
 | DELETE | `/admin/apps/:id` | Delete an app |
-| GET | `/admin/stats` | All connection stats |
-| GET | `/admin/stats/:appId` | Stats for one app |
+| GET | `/admin/stats` | Live connection counts (all apps) |
+| GET | `/admin/stats/:appId` | Live connection counts (one app) |
+| GET | `/admin/usage` | Monthly usage (all apps) |
+| GET | `/admin/usage/:appId` | Monthly usage (one app) |
+| GET | `/admin/logs/:appId` | Recent messages — last 7 days |
 
 ### Webhooks
 
@@ -180,11 +183,33 @@ curl -X PATCH http://localhost:3000/admin/apps/<appId> \
 }
 ```
 
+### Monthly usage
+
+```bash
+curl http://localhost:3000/admin/usage/abc123 \
+  -H "x-admin-secret: your-admin-secret"
+
+# Response:
+# {
+#   "ok": true,
+#   "usage": [
+#     { "appId": "abc123", "month": "2026-06", "messagesPublished": 1420, "connections": 83 }
+#   ]
+# }
+```
+
+### Message log
+
+Returns all messages published in the last 7 days for an app. The log is pruned automatically every night at midnight.
+
+```bash
+curl http://localhost:3000/admin/logs/abc123 \
+  -H "x-admin-secret: your-admin-secret"
+```
+
 ---
 
 ## Testing locally
-
-No Cloud Functions needed to test — just curl your local server:
 
 ```bash
 # Publish a message
@@ -221,9 +246,8 @@ bun run start
 ## Scaling beyond one instance
 
 The server uses Bun's in-memory pub/sub, which is perfect for a single instance.
-For multiple instances behind a load balancer, a Redis fan-out layer is needed —
+For multiple instances behind a load balancer, a Redis fan-out layer would be needed —
 each instance would subscribe to a shared Redis channel and broadcast locally.
-This is straightforward to add with Upstash if you ever need it.
 
 ---
 
