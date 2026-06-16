@@ -15,7 +15,7 @@ Each "app" gets two keys:
 - **publishKey** (`pk_...`) — secret, server-side only. Used to send messages.
 - **subscribeKey** (`sk_...`) — public, safe in frontend code. Used to receive messages.
 
-Everything is stored in Redis (via Upstash) — no database needed.
+Everything is stored in a local SQLite file (`pushpin.db`) via Bun's built-in SQLite — no external database needed.
 
 ---
 
@@ -29,7 +29,7 @@ bun install
 ### 2. Configure environment
 ```bash
 cp .env.example .env
-# Fill in UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN, ADMIN_SECRET
+# Fill in ADMIN_SECRET
 ```
 
 ### 3. Start the server
@@ -232,6 +232,4 @@ This is straightforward to add with Upstash if you ever need it.
 | Variable | Description |
 |----------|-------------|
 | `PORT` | Server port (default: 3000) |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token |
 | `ADMIN_SECRET` | Secret for admin API routes |

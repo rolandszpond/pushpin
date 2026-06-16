@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@elysiajs/cors": "latest",
-    "@upstash/redis": "latest",
     "elysia": "latest",
     "nanoid": "latest"
   },
