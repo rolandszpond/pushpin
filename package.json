@@ -11,7 +11,6 @@
     "@elysiajs/cors": "latest",
     "@upstash/redis": "latest",
     "elysia": "latest",
-    "firebase": "^12.11.0",
     "nanoid": "latest"
   },
   "devDependencies": {

@@ -1,5 +1,5 @@
 import Elysia, { t } from 'elysia'
-import { createApp, listApps, getAppById, deleteApp } from '../lib/store'
+import { createApp, listApps, getAppById, updateApp, deleteApp } from '../lib/store'
 import { getStats, getAllStats } from '../lib/registry'
 
 const adminAuth = (headers: Record<string, string | undefined>, set: any) => {
@@ -45,6 +45,23 @@ export const adminRoute = new Elysia({ prefix: '/admin' })
         if (!app) { set.status = 404; return { ok: false, error: 'Not found' } }
         return { ok: true, app }
     })
+
+    // ── Update app (set/clear webhook) ──────────────────────────────────────
+    .patch(
+        '/apps/:id',
+        async ({ params, body, headers, set }) => {
+            if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
+
+            const app = await updateApp(params.id, { webhookUrl: body.webhookUrl })
+            if (!app) { set.status = 404; return { ok: false, error: 'Not found' } }
+            return { ok: true, app }
+        },
+        {
+            body: t.Object({
+                webhookUrl: t.Union([t.String({ format: 'uri' }), t.Null()]),
+            }),
+        }
+    )
 
     // ── Delete app ──────────────────────────────────────────────────────────
     .delete('/apps/:id', async ({ params, headers, set }) => {

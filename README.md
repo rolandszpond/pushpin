@@ -5,9 +5,10 @@ Your own self-hosted pub/sub service. Like Pusher, but you own it.
 ## Architecture
 
 ```
-Firebase Functions ──┐
-Any backend        ──┼──→  POST /publish  ──→  Pushpin Server  ──→  WebSocket clients
-Webhooks           ──┘     (publishKey)      (Elysia + Bun + Redis)   (subscribeKey)
+Any backend  ──→  POST /publish  ──→  Pushpin Server  ──→  WebSocket clients
+                  (publishKey)      (Elysia + Bun + Redis)   (subscribeKey)
+                                           │
+                                           └──→  Webhook (optional, per app)
 ```
 
 Each "app" gets two keys:
@@ -142,9 +143,42 @@ All admin routes require `x-admin-secret` header.
 | POST | `/admin/apps` | Create a new app |
 | GET | `/admin/apps` | List all apps |
 | GET | `/admin/apps/:id` | Get app details |
+| PATCH | `/admin/apps/:id` | Update app (set/clear webhook URL) |
 | DELETE | `/admin/apps/:id` | Delete an app |
 | GET | `/admin/stats` | All connection stats |
 | GET | `/admin/stats/:appId` | Stats for one app |
+
+### Webhooks
+
+Each app can have an optional webhook URL. When set, Pushpin POSTs a JSON payload to that URL after every publish (fire-and-forget, does not block the response).
+
+**Set a webhook:**
+```bash
+curl -X PATCH http://localhost:3000/admin/apps/<appId> \
+  -H "Content-Type: application/json" \
+  -H "x-admin-secret: your-admin-secret" \
+  -d '{"webhookUrl": "https://your-server.com/pushpin-hook"}'
+```
+
+**Clear a webhook:**
+```bash
+curl -X PATCH http://localhost:3000/admin/apps/<appId> \
+  -H "Content-Type: application/json" \
+  -H "x-admin-secret: your-admin-secret" \
+  -d '{"webhookUrl": null}'
+```
+
+**Webhook payload:**
+```json
+{
+  "appId": "abc123",
+  "channel": "orders",
+  "event": "order.created",
+  "data": { "id": 1 },
+  "timestamp": 1718000000000,
+  "delivered": 3
+}
+```
 
 ---
 

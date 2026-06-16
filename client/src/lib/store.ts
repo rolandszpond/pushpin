@@ -18,6 +18,7 @@ export type App = {
     publishKey: string
     subscribeKey: string
     createdAt: string // ISO string
+    webhookUrl?: string
 }
 
 // ─── Key helpers ──────────────────────────────────────────────────────────────
@@ -77,6 +78,21 @@ export async function listApps(): Promise<App[]> {
     return (apps.filter(Boolean) as App[]).sort(
         (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
     )
+}
+
+export async function updateApp(id: string, patch: { webhookUrl?: string | null }): Promise<App | null> {
+    const app = await getAppById(id)
+    if (!app) return null
+
+    if (patch.webhookUrl === null) {
+        await redis.hdel(key.byId(id), 'webhookUrl')
+        delete app.webhookUrl
+    } else if (patch.webhookUrl !== undefined) {
+        await redis.hset(key.byId(id), { webhookUrl: patch.webhookUrl })
+        app.webhookUrl = patch.webhookUrl
+    }
+
+    return app
 }
 
 export async function deleteApp(id: string): Promise<boolean> {

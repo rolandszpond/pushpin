@@ -1,8 +1,16 @@
 import Elysia, { t } from 'elysia'
 import { resolveApp } from '../middleware/resolve-app'
 import type { WireMessage } from '../types'
-import { trackPublish } from '../lib/firebase'
+import type { App } from '../lib/store'
 
+function fireWebhook(app: App, message: WireMessage, delivered: number) {
+    if (!app.webhookUrl) return
+    fetch(app.webhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ appId: message.appId, channel: message.channel, event: message.event, data: message.data, timestamp: message.timestamp, delivered }),
+    }).catch(() => {})
+}
 /**
  * Publish endpoint
  *
@@ -49,8 +57,7 @@ export const publishRoute = new Elysia()
             // Broadcast via Bun's built-in pub/sub
             const topic = `${app.id}:${channel}`
             const delivered = server?.publish(topic, JSON.stringify(message)) ?? 0
-
-            trackPublish({ appId: app.id, channel, event, data: data ?? null, timestamp: message.timestamp, delivered })
+            fireWebhook(app, message, delivered)
 
             return { ok: true, delivered }
         },
@@ -89,7 +96,7 @@ export const publishRoute = new Elysia()
                 }
                 const topic = `${app.id}:${channel}`
                 const delivered = server?.publish(topic, JSON.stringify(message)) ?? 0
-                trackPublish({ appId: app.id, channel, event, data: data ?? null, timestamp: message.timestamp, delivered })
+                fireWebhook(app, message, delivered)
                 return { channel, event, delivered }
             })
 
