@@ -5,13 +5,18 @@ import { wsRoute } from './routes/ws'
 import { publishRoute } from './routes/publish'
 import { adminRoute } from './routes/admin'
 import { pruneOldLogs } from './lib/store'
+import { migrate } from './lib/migrate'
+import { initCache } from './lib/cache'
 
 const PORT = Number(process.env.PORT ?? 3000)
+
+await migrate()
+await initCache()
 
 const app = new Elysia()
     .use(cors({
         origin: true, // restrict to your domains in production
-        methods: ['GET', 'POST', 'DELETE'],
+        methods: ['GET', 'POST', 'PATCH', 'DELETE'],
     }))
 
     // Health check

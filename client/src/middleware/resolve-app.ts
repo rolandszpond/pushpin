@@ -1,5 +1,5 @@
-import { getAppByKey } from '../lib/store'
+import { getCachedApp } from '../lib/cache'
 
-export async function resolveApp(apiKey: string) {
-    return getAppByKey(apiKey)
+export function resolveApp(apiKey: string) {
+    return getCachedApp(apiKey)
 }

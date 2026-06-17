@@ -11,7 +11,8 @@
     "@elysiajs/cors": "latest",
     "@elysiajs/cron": "^1.4.2",
     "elysia": "latest",
-    "nanoid": "latest"
+    "nanoid": "latest",
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
     "bun-types": "latest"
