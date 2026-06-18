@@ -35,6 +35,12 @@ export const wsRoute = new Elysia()
                 return
             }
 
+            if (app.connectionLimit !== null && getStats(app.id).totalConnections >= app.connectionLimit) {
+                ws.send(JSON.stringify({ event: 'error', data: { message: 'Connection limit reached' } }))
+                ws.close()
+                return
+            }
+
             // Attach app context to the ws for use in close()
             ;(ws as any)._app = app
             ;(ws as any)._channel = channel
@@ -43,12 +49,6 @@ export const wsRoute = new Elysia()
             // Bun's built-in pub/sub — subscribe to namespaced channel
             const topic = `${app.id}:${channel}`
             ws.subscribe(topic)
-
-            if (app.connectionLimit !== null && getStats(app.id).totalConnections >= app.connectionLimit) {
-                ws.send(JSON.stringify({ event: 'error', data: { message: 'Connection limit reached' } }))
-                ws.close()
-                return
-            }
 
             trackConnect(app.id, channel)
             trackMonthlyConnect(app.id, getStats(app.id).totalConnections)
