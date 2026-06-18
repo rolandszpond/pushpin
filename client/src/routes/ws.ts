@@ -35,7 +35,7 @@ export const wsRoute = new Elysia()
                 return
             }
 
-            if (app.connectionLimit !== null && getStats(app.id).totalConnections >= app.connectionLimit) {
+            if (app.connectionLimit !== null && getStats(app.id).totalConnections > app.connectionLimit) {
                 ws.send(JSON.stringify({ event: 'error', data: { message: 'Connection limit reached' } }))
                 ws.close()
                 return
