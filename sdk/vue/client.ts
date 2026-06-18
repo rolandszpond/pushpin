@@ -147,15 +147,21 @@ export class PushpinClient {
         entry.status = 'connecting'
 
         ws.onopen = () => {
-            entry.status = 'connected'
-            entry.attempts = 0
+            // TCP connected — wait for pushpin:connected before marking as ready
         }
 
         ws.onmessage = (e) => {
             try {
                 const msg: WireMessage = JSON.parse(e.data)
-                // Skip internal handshake
-                if (msg.event === 'pushpin:connected') return
+                if (msg.event === 'pushpin:connected') {
+                    entry.status = 'connected'
+                    entry.attempts = 0
+                    return
+                }
+                if (msg.event === 'error') {
+                    // Server explicitly rejected (bad key, limit reached, etc.) — don't retry
+                    entry.intentionalClose = true
+                }
                 entry.channel._dispatch(msg.event, msg.data)
             } catch {
                 // ignore malformed messages
