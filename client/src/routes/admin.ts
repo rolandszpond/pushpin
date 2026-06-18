@@ -26,13 +26,14 @@ export const adminRoute = new Elysia({ prefix: '/admin' })
         '/apps',
         async ({ body, headers, set }) => {
             if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-            const app = await createApp(body.name)
+            const app = await createApp(body.name, body.connectionLimit)
             addToCache(app)
             return { ok: true, app }
         },
         {
             body: t.Object({
-                name: t.String({ minLength: 1 }),
+                name:            t.String({ minLength: 1 }),
+                connectionLimit: t.Optional(t.Union([t.Integer({ minimum: 1 }), t.Null()])),
             }),
         }
     )
@@ -56,14 +57,15 @@ export const adminRoute = new Elysia({ prefix: '/admin' })
         '/apps/:id',
         async ({ params, body, headers, set }) => {
             if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-            const app = await updateApp(params.id, { webhookUrl: body.webhookUrl })
+            const app = await updateApp(params.id, { webhookUrl: body.webhookUrl, connectionLimit: body.connectionLimit })
             if (!app) { set.status = 404; return { ok: false, error: 'Not found' } }
             updateInCache(app)
             return { ok: true, app }
         },
         {
             body: t.Object({
-                webhookUrl: t.Union([t.String({ format: 'uri' }), t.Null()]),
+                webhookUrl:      t.Optional(t.Union([t.String({ format: 'uri' }), t.Null()])),
+                connectionLimit: t.Optional(t.Union([t.Integer({ minimum: 1 }), t.Null()])),
             }),
         }
     )

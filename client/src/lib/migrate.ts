@@ -3,14 +3,16 @@ import { sql } from './db'
 export async function migrate() {
     await sql`
         CREATE TABLE IF NOT EXISTS apps (
-            id            TEXT PRIMARY KEY,
-            name          TEXT NOT NULL,
-            publish_key   TEXT NOT NULL UNIQUE,
-            subscribe_key TEXT NOT NULL UNIQUE,
-            webhook_url   TEXT,
-            created_at    TEXT NOT NULL
+            id               TEXT PRIMARY KEY,
+            name             TEXT NOT NULL,
+            publish_key      TEXT NOT NULL UNIQUE,
+            subscribe_key    TEXT NOT NULL UNIQUE,
+            webhook_url      TEXT,
+            connection_limit INTEGER,
+            created_at       TEXT NOT NULL
         )
     `
+    await sql`ALTER TABLE apps ADD COLUMN IF NOT EXISTS connection_limit INTEGER`
     await sql`
         CREATE TABLE IF NOT EXISTS monthly_usage (
             app_id              TEXT NOT NULL,

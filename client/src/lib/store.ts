@@ -8,6 +8,7 @@ export type App = {
     subscribeKey: string
     createdAt: string
     webhookUrl?: string | null
+    connectionLimit: number | null
 }
 
 export type MonthlyUsage = {
@@ -29,17 +30,18 @@ export type MessageLogEntry = {
 
 // ─── Apps ─────────────────────────────────────────────────────────────────────
 
-export async function createApp(name: string): Promise<App> {
+export async function createApp(name: string, connectionLimit?: number | null): Promise<App> {
     const app: App = {
-        id:           nanoid(16),
+        id:              nanoid(16),
         name,
-        publishKey:   `pk_${nanoid(32)}`,
-        subscribeKey: `sk_${nanoid(32)}`,
-        createdAt:    new Date().toISOString(),
+        publishKey:      `pk_${nanoid(32)}`,
+        subscribeKey:    `sk_${nanoid(32)}`,
+        createdAt:       new Date().toISOString(),
+        connectionLimit: connectionLimit ?? null,
     }
     await sql`
-        INSERT INTO apps (id, name, publish_key, subscribe_key, created_at)
-        VALUES (${app.id}, ${app.name}, ${app.publishKey}, ${app.subscribeKey}, ${app.createdAt})
+        INSERT INTO apps (id, name, publish_key, subscribe_key, connection_limit, created_at)
+        VALUES (${app.id}, ${app.name}, ${app.publishKey}, ${app.subscribeKey}, ${app.connectionLimit}, ${app.createdAt})
     `
     return app
 }
@@ -58,7 +60,7 @@ export async function listApps(): Promise<App[]> {
     return sql<App[]>`SELECT * FROM apps ORDER BY created_at ASC`
 }
 
-export async function updateApp(id: string, patch: { webhookUrl?: string | null }): Promise<App | null> {
+export async function updateApp(id: string, patch: { webhookUrl?: string | null; connectionLimit?: number | null }): Promise<App | null> {
     const app = await getAppById(id)
     if (!app) return null
 
@@ -68,6 +70,14 @@ export async function updateApp(id: string, patch: { webhookUrl?: string | null 
     } else if (patch.webhookUrl !== undefined) {
         await sql`UPDATE apps SET webhook_url = ${patch.webhookUrl} WHERE id = ${id}`
         app.webhookUrl = patch.webhookUrl
+    }
+
+    if (patch.connectionLimit === null) {
+        await sql`UPDATE apps SET connection_limit = NULL WHERE id = ${id}`
+        app.connectionLimit = null
+    } else if (patch.connectionLimit !== undefined) {
+        await sql`UPDATE apps SET connection_limit = ${patch.connectionLimit} WHERE id = ${id}`
+        app.connectionLimit = patch.connectionLimit
     }
 
     return app
@@ -94,11 +104,11 @@ export async function trackMonthlyPublish(appId: string): Promise<void> {
     `
 }
 
-export async function trackMonthlyConnect(appId: string): Promise<void> {
+export async function trackMonthlyConnect(appId: string, currentConnections: number): Promise<void> {
     await sql`
         INSERT INTO monthly_usage (app_id, month, messages_published, connections)
-        VALUES (${appId}, ${currentMonth()}, 0, 1)
-        ON CONFLICT (app_id, month) DO UPDATE SET connections = monthly_usage.connections + 1
+        VALUES (${appId}, ${currentMonth()}, 0, ${currentConnections})
+        ON CONFLICT (app_id, month) DO UPDATE SET connections = GREATEST(monthly_usage.connections, ${currentConnections})
     `
 }
 

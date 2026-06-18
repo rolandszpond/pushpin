@@ -1,6 +1,6 @@
 import Elysia, { t } from 'elysia'
 import { resolveApp } from '../middleware/resolve-app'
-import { trackConnect, trackDisconnect } from '../lib/registry'
+import { trackConnect, trackDisconnect, getStats } from '../lib/registry'
 import { trackMonthlyConnect } from '../lib/store'
 import type { WireMessage } from '../types'
 import { nanoid } from 'nanoid'
@@ -44,8 +44,14 @@ export const wsRoute = new Elysia()
             const topic = `${app.id}:${channel}`
             ws.subscribe(topic)
 
+            if (app.connectionLimit !== null && getStats(app.id).totalConnections >= app.connectionLimit) {
+                ws.send(JSON.stringify({ event: 'error', data: { message: 'Connection limit reached' } }))
+                ws.close()
+                return
+            }
+
             trackConnect(app.id, channel)
-            trackMonthlyConnect(app.id)
+            trackMonthlyConnect(app.id, getStats(app.id).totalConnections)
 
             ws.send(JSON.stringify({
                 event: 'pushpin:connected',
