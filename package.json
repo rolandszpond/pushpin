@@ -8,11 +8,7 @@
     "start": "bun run dist/index.js"
   },
   "dependencies": {
-    "@elysiajs/cors": "latest",
-    "@elysiajs/cron": "^1.4.2",
-    "elysia": "latest",
-    "nanoid": "latest",
-    "postgres": "^3.4.9"
+    "nanoid": "latest"
   },
   "devDependencies": {
     "bun-types": "latest"

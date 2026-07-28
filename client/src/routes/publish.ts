@@ -1,7 +1,8 @@
-import Elysia, { t } from 'elysia'
+import type { Server } from 'bun'
 import { resolveApp } from '../middleware/resolve-app'
 import type { WireMessage } from '../types'
-import { trackMonthlyPublish, logMessage, type App } from '../lib/store'
+import type { App } from '../lib/store'
+import { json } from '../lib/http'
 
 function fireWebhook(app: App, message: WireMessage, delivered: number) {
     if (!app.webhookUrl) return
@@ -11,6 +12,13 @@ function fireWebhook(app: App, message: WireMessage, delivered: number) {
         body: JSON.stringify({ appId: message.appId, channel: message.channel, event: message.event, data: message.data, timestamp: message.timestamp, delivered }),
     }).catch(() => {})
 }
+
+type PublishBody = { channel: string; event: string; data?: unknown }
+
+function isPublishBody(body: any): body is PublishBody {
+    return typeof body?.channel === 'string' && typeof body?.event === 'string'
+}
+
 /**
  * Publish endpoint
  *
@@ -21,28 +29,22 @@ function fireWebhook(app: App, message: WireMessage, delivered: number) {
  *
  * The publishKey is secret — only use it server-side (Cloud Functions, backends).
  */
-export const publishRoute = new Elysia()
-    .post(
-        '/publish',
-        async ({ body, headers, set, server }) => {
+export const publishRoutes = {
+    '/publish': {
+        POST: async (req: Request, server: Server) => {
             // Resolve publish key from Authorization header
-            const publishKey = headers['authorization']?.replace('Bearer ', '').trim()
-            if (!publishKey) {
-                set.status = 401
-                return { ok: false, error: 'Missing Authorization header' }
-            }
+            const publishKey = req.headers.get('authorization')?.replace('Bearer ', '').trim()
+            if (!publishKey) return json(req, { ok: false, error: 'Missing Authorization header' }, 401)
 
-            const app = await resolveApp(publishKey)
-            if (!app) {
-                set.status = 401
-                return { ok: false, error: 'Invalid publish key' }
-            }
+            const app = resolveApp(publishKey)
+            if (!app) return json(req, { ok: false, error: 'Invalid publish key' }, 401)
 
             // Verify it's actually the publish key, not the subscribe key
-            if (app.publishKey !== publishKey) {
-                set.status = 403
-                return { ok: false, error: 'Subscribe key cannot publish' }
-            }
+            if (app.publishKey !== publishKey) return json(req, { ok: false, error: 'Subscribe key cannot publish' }, 403)
+
+            let body: unknown
+            try { body = await req.json() } catch { return json(req, { ok: false, error: 'Invalid JSON body' }, 400) }
+            if (!isPublishBody(body)) return json(req, { ok: false, error: 'channel and event are required strings' }, 422)
 
             const { channel, event, data } = body
 
@@ -56,39 +58,30 @@ export const publishRoute = new Elysia()
 
             // Broadcast via Bun's built-in pub/sub
             const topic = `${app.id}:${channel}`
-            const delivered = server?.publish(topic, JSON.stringify(message)) ?? 0
+            const delivered = server.publish(topic, JSON.stringify(message))
             fireWebhook(app, message, delivered)
-            trackMonthlyPublish(app.id)
-            logMessage({ appId: app.id, channel, event, data: data ?? null, timestamp: message.timestamp, delivered })
 
-            return { ok: true, delivered }
+            return json(req, { ok: true, delivered })
         },
-        {
-            body: t.Object({
-                channel: t.String(),
-                event:   t.String(),
-                data:    t.Optional(t.Any()),
-            }),
-        }
-    )
+    },
 
     // Batch publish — send to multiple channels at once
-    .post(
-        '/publish/batch',
-        async ({ body, headers, set, server }) => {
-            const publishKey = headers['authorization']?.replace('Bearer ', '').trim()
-            if (!publishKey) {
-                set.status = 401
-                return { ok: false, error: 'Missing Authorization header' }
+    '/publish/batch': {
+        POST: async (req: Request, server: Server) => {
+            const publishKey = req.headers.get('authorization')?.replace('Bearer ', '').trim()
+            if (!publishKey) return json(req, { ok: false, error: 'Missing Authorization header' }, 401)
+
+            const app = resolveApp(publishKey)
+            if (!app || app.publishKey !== publishKey) return json(req, { ok: false, error: 'Invalid publish key' }, 401)
+
+            let body: unknown
+            try { body = await req.json() } catch { return json(req, { ok: false, error: 'Invalid JSON body' }, 400) }
+            const messages = (body as any)?.messages
+            if (!Array.isArray(messages) || !messages.every(isPublishBody)) {
+                return json(req, { ok: false, error: 'messages must be an array of { channel, event, data? }' }, 422)
             }
 
-            const app = await resolveApp(publishKey)
-            if (!app || app.publishKey !== publishKey) {
-                set.status = 401
-                return { ok: false, error: 'Invalid publish key' }
-            }
-
-            const results = body.messages.map(({ channel, event, data }) => {
+            const results = (messages as PublishBody[]).map(({ channel, event, data }) => {
                 const message: WireMessage = {
                     event,
                     data: data ?? null,
@@ -97,22 +90,12 @@ export const publishRoute = new Elysia()
                     timestamp: Date.now(),
                 }
                 const topic = `${app.id}:${channel}`
-                const delivered = server?.publish(topic, JSON.stringify(message)) ?? 0
+                const delivered = server.publish(topic, JSON.stringify(message))
                 fireWebhook(app, message, delivered)
-                trackMonthlyPublish(app.id)
-                logMessage({ appId: app.id, channel, event, data: data ?? null, timestamp: message.timestamp, delivered })
                 return { channel, event, delivered }
             })
 
-            return { ok: true, results }
+            return json(req, { ok: true, results })
         },
-        {
-            body: t.Object({
-                messages: t.Array(t.Object({
-                    channel: t.String(),
-                    event:   t.String(),
-                    data:    t.Optional(t.Any()),
-                }))
-            })
-        }
-    )
+    },
+}

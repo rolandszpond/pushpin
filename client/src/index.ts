@@ -1,45 +1,36 @@
-import { Elysia } from 'elysia'
-import { cors } from '@elysiajs/cors'
-import { cron } from '@elysiajs/cron'
-import { wsRoute } from './routes/ws'
-import { publishRoute } from './routes/publish'
-import { adminRoute } from './routes/admin'
-import { pruneOldLogs } from './lib/store'
-import { migrate } from './lib/migrate'
-import { initCache } from './lib/cache'
+import { wsUpgradeRoute, websocketHandlers, type WsData } from './routes/ws'
+import { publishRoutes } from './routes/publish'
+import { adminRoutes } from './routes/admin'
+import { json, cors } from './lib/http'
 
 const PORT = Number(process.env.PORT ?? 3000)
 
-await migrate()
-await initCache()
+const server = Bun.serve<WsData>({
+    port: PORT,
 
-const app = new Elysia()
-    .use(cors({
-        origin: true, // restrict to your domains in production
-        methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-    }))
+    routes: {
+        // Health check
+        '/': (req) => json(req, {
+            service: 'pushpin',
+            version: '0.1.0',
+            status: 'ok',
+            timestamp: Date.now(),
+        }),
 
-    // Health check
-    .get('/', () => ({
-        service: 'pushpin',
-        version: '0.1.0',
-        status: 'ok',
-        timestamp: Date.now(),
-    }))
+        '/app/:subscribeKey': wsUpgradeRoute,
 
-    .use(cron({
-        name: 'prune-message-log',
-        pattern: '0 0 * * *', // daily at midnight
-        run: pruneOldLogs,
-    }))
+        ...publishRoutes,
+        ...adminRoutes,
+    },
 
-    // Routes
-    .use(wsRoute)
-    .use(publishRoute)
-    .use(adminRoute)
+    websocket: websocketHandlers,
 
-    .listen(PORT)
+    fetch(req) {
+        if (req.method === 'OPTIONS') {
+            return new Response(null, { status: 204, headers: cors(req) })
+        }
+        return json(req, { ok: false, error: 'Not found' }, 404)
+    },
+})
 
-console.log(`🚀 Pushpin running on port ${PORT}`)
-
-export type App = typeof app
+console.log(`🚀 Pushpin running on port ${server.port}`)

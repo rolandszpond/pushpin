@@ -1,8 +1,14 @@
-import postgres from 'postgres'
+import { Database } from 'bun:sqlite'
 
-if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL env var is required')
+export const db = new Database('pushpin.db', { create: true })
 
-export const sql = postgres(process.env.DATABASE_URL, {
-    transform: postgres.camel,
-    max: 10,
-})
+db.run(`
+    CREATE TABLE IF NOT EXISTS apps (
+        id              TEXT PRIMARY KEY,
+        name            TEXT NOT NULL,
+        publishKey      TEXT NOT NULL UNIQUE,
+        subscribeKey    TEXT NOT NULL UNIQUE,
+        webhookUrl      TEXT,
+        createdAt       TEXT NOT NULL
+    )
+`)

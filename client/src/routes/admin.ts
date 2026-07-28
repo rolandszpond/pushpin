@@ -1,108 +1,113 @@
-import Elysia, { t } from 'elysia'
-import { createApp, listApps, getAppById, updateApp, deleteApp, getMonthlyUsage, getAllMonthlyUsage, getRecentMessages } from '../lib/store'
+import type { BunRequest } from 'bun'
+import { createApp, listApps, getAppById, updateApp, deleteApp, importApps, type App } from '../lib/store'
 import { getStats, getAllStats } from '../lib/registry'
-import { addToCache, updateInCache, removeFromCache, initCache } from '../lib/cache'
+import { json, isAuthorized } from '../lib/http'
 
-const adminAuth = (headers: Record<string, string | undefined>, set: any) => {
-    const secret = headers['x-admin-secret']
-    if (secret !== process.env.ADMIN_SECRET) {
-        set.status = 401
-        return false
-    }
-    return true
+function isValidWebhookUrl(url: unknown): url is string {
+    if (typeof url !== 'string') return false
+    try { new URL(url); return true } catch { return false }
 }
 
-export const adminRoute = new Elysia({ prefix: '/admin' })
+function isExportedApp(a: any): a is App {
+    return typeof a?.id === 'string'
+        && typeof a?.name === 'string'
+        && typeof a?.publishKey === 'string'
+        && typeof a?.subscribeKey === 'string'
+        && typeof a?.createdAt === 'string'
+        && (a.webhookUrl === undefined || a.webhookUrl === null || typeof a.webhookUrl === 'string')
+}
 
-    // ── Rebuild app cache from DB ────────────────────────────────────────────
-    .post('/init', async ({ headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        await initCache()
-        return { ok: true }
-    })
+export const adminRoutes = {
+    // ── Create / list apps ──────────────────────────────────────────────────
+    '/admin/apps': {
+        POST: async (req: Request) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
 
-    // ── Create app ──────────────────────────────────────────────────────────
-    .post(
-        '/apps',
-        async ({ body, headers, set }) => {
-            if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-            const app = await createApp(body.name, body.connectionLimit)
-            addToCache(app)
-            return { ok: true, app }
+            let body: unknown
+            try { body = await req.json() } catch { return json(req, { ok: false, error: 'Invalid JSON body' }, 400) }
+            const name = (body as any)?.name
+            if (typeof name !== 'string' || name.length < 1) {
+                return json(req, { ok: false, error: 'name is required' }, 422)
+            }
+
+            const app = createApp(name)
+            return json(req, { ok: true, app })
         },
-        {
-            body: t.Object({
-                name:            t.String({ minLength: 1 }),
-                connectionLimit: t.Optional(t.Union([t.Integer({ minimum: 1 }), t.Null()])),
-            }),
-        }
-    )
 
-    // ── List apps ───────────────────────────────────────────────────────────
-    .get('/apps', async ({ headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        return { ok: true, apps: await listApps() }
-    })
-
-    // ── Get app ─────────────────────────────────────────────────────────────
-    .get('/apps/:id', async ({ params, headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        const app = await getAppById(params.id)
-        if (!app) { set.status = 404; return { ok: false, error: 'Not found' } }
-        return { ok: true, app }
-    })
-
-    // ── Update app (set/clear webhook) ──────────────────────────────────────
-    .patch(
-        '/apps/:id',
-        async ({ params, body, headers, set }) => {
-            if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-            const app = await updateApp(params.id, { webhookUrl: body.webhookUrl, connectionLimit: body.connectionLimit })
-            if (!app) { set.status = 404; return { ok: false, error: 'Not found' } }
-            updateInCache(app)
-            return { ok: true, app }
+        GET: (req: Request) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
+            return json(req, { ok: true, apps: listApps() })
         },
-        {
-            body: t.Object({
-                webhookUrl:      t.Optional(t.Union([t.String({ format: 'uri' }), t.Null()])),
-                connectionLimit: t.Optional(t.Union([t.Integer({ minimum: 1 }), t.Null()])),
-            }),
-        }
-    )
+    },
 
-    // ── Delete app ──────────────────────────────────────────────────────────
-    .delete('/apps/:id', async ({ params, headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        const app = await deleteApp(params.id)
-        if (!app) { set.status = 404; return { ok: false, error: 'Not found' } }
-        removeFromCache(app)
-        return { ok: true }
-    })
+    // ── Get / update (webhook) / delete a single app ────────────────────────
+    '/admin/apps/:id': {
+        GET: (req: BunRequest<'/admin/apps/:id'>) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
+            const app = getAppById(req.params.id)
+            if (!app) return json(req, { ok: false, error: 'Not found' }, 404)
+            return json(req, { ok: true, app })
+        },
+
+        PATCH: async (req: BunRequest<'/admin/apps/:id'>) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
+
+            let body: unknown
+            try { body = await req.json() } catch { return json(req, { ok: false, error: 'Invalid JSON body' }, 400) }
+            const webhookUrl = (body as any)?.webhookUrl
+            if (webhookUrl !== undefined && webhookUrl !== null && !isValidWebhookUrl(webhookUrl)) {
+                return json(req, { ok: false, error: 'webhookUrl must be a valid URL or null' }, 422)
+            }
+
+            const app = updateApp(req.params.id, { webhookUrl })
+            if (!app) return json(req, { ok: false, error: 'Not found' }, 404)
+            return json(req, { ok: true, app })
+        },
+
+        DELETE: (req: BunRequest<'/admin/apps/:id'>) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
+            const app = deleteApp(req.params.id)
+            if (!app) return json(req, { ok: false, error: 'Not found' }, 404)
+            return json(req, { ok: true })
+        },
+    },
 
     // ── Live connection stats ────────────────────────────────────────────────
-    .get('/stats', ({ headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        return { ok: true, stats: getAllStats() }
-    })
+    '/admin/stats': {
+        GET: (req: Request) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
+            return json(req, { ok: true, stats: getAllStats() })
+        },
+    },
 
-    .get('/stats/:appId', ({ params, headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        return { ok: true, stats: getStats(params.appId) }
-    })
+    '/admin/stats/:appId': {
+        GET: (req: BunRequest<'/admin/stats/:appId'>) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
+            return json(req, { ok: true, stats: getStats(req.params.appId) })
+        },
+    },
 
-    // ── Monthly usage ────────────────────────────────────────────────────────
-    .get('/usage', async ({ headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        return { ok: true, usage: await getAllMonthlyUsage() }
-    })
+    // ── Export / import apps (restore after an ephemeral redeploy) ──────────
+    '/admin/export': {
+        GET: (req: Request) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
+            return json(req, { ok: true, exportedAt: new Date().toISOString(), apps: listApps() })
+        },
+    },
 
-    .get('/usage/:appId', async ({ params, headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        return { ok: true, usage: await getMonthlyUsage(params.appId) }
-    })
+    '/admin/import': {
+        POST: async (req: Request) => {
+            if (!isAuthorized(req)) return json(req, { ok: false, error: 'Unauthorized' }, 401)
 
-    // ── Recent message log ───────────────────────────────────────────────────
-    .get('/logs/:appId', async ({ params, headers, set }) => {
-        if (!adminAuth(headers as any, set)) return { ok: false, error: 'Unauthorized' }
-        return { ok: true, messages: await getRecentMessages(params.appId) }
-    })
+            let body: unknown
+            try { body = await req.json() } catch { return json(req, { ok: false, error: 'Invalid JSON body' }, 400) }
+            const apps = (body as any)?.apps
+            if (!Array.isArray(apps) || !apps.every(isExportedApp)) {
+                return json(req, { ok: false, error: 'apps must be an array of previously-exported app objects' }, 422)
+            }
+
+            const imported = importApps(apps)
+            return json(req, { ok: true, imported })
+        },
+    },
+}

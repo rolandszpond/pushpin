@@ -6,7 +6,7 @@ Your own self-hosted pub/sub service. Like Pusher, but you own it.
 
 ```
 Any backend  ──→  POST /publish  ──→  Pushpin Server  ──→  WebSocket clients
-                  (publishKey)      (Elysia + Bun + SQLite)  (subscribeKey)
+                  (publishKey)         (Bun + SQLite)         (subscribeKey)
                                            │
                                            └──→  Webhook (optional, per app)
 ```
@@ -82,6 +82,41 @@ await pushpin.triggerBatch([
 ])
 ```
 
+### PHP
+```php
+require 'sdk/php/PushpinPublisher.php';
+
+use Pushpin\PushpinPublisher;
+
+$pushpin = new PushpinPublisher('https://your-pushpin.do.app', getenv('PUSHPIN_PUBLISH_KEY'));
+
+$pushpin->trigger('orders', 'order.created', ['id' => 123, 'total' => 49.99]);
+
+$pushpin->channel("user.$userId")->trigger('notification', ['text' => 'Your order shipped!']);
+
+$pushpin->triggerBatch([
+  ['channel' => 'orders', 'event' => 'order.created', 'data' => ['id' => 1]],
+  ['channel' => "user.$userId", 'event' => 'notification', 'data' => ['text' => 'Hi']],
+]);
+```
+
+---
+
+## Subscribing (vanilla JS/TS)
+
+No framework dependency — works in any browser context (plain script, bundler, or a `<script type="module">` tag).
+
+```ts
+import { PushpinClient } from './sdk/js/client'
+
+const pushpin = new PushpinClient({ serverUrl: 'wss://your-pushpin.do.app', subscribeKey: 'sk_...' })
+
+pushpin.channel('orders')
+  .on('order.created', (data) => console.log(data))
+  .on('order.updated', (data) => console.log(data))
+  .on('*', ({ event, data }) => console.log(event, data))
+```
+
 ---
 
 ## Subscribing (Vue frontend)
@@ -121,15 +156,45 @@ on('*', ({ event, data }) => console.log(event, data))
 </template>
 ```
 
-### Vanilla JS
+---
+
+## Subscribing (React / React Native)
+
+`sdk/react/client.ts` works unmodified in both — it only relies on the standard `WebSocket` global, which React Native provides too.
+
+### Setup — one shared client per app
 ```ts
-import { PushpinClient } from './sdk/vue/client'
+// lib/pushpin.ts
+import { PushpinClient } from './sdk/react/client'
 
-const pushpin = new PushpinClient({ serverUrl: '...', subscribeKey: 'sk_...' })
+export const pushpin = new PushpinClient({
+  serverUrl: process.env.NEXT_PUBLIC_PUSHPIN_URL!, // or EXPO_PUBLIC_PUSHPIN_URL, etc.
+  subscribeKey: process.env.NEXT_PUBLIC_PUSHPIN_SUBSCRIBE_KEY!,
+})
+```
 
-pushpin.channel('orders')
-  .on('order.created', (data) => console.log(data))
-  .on('order.updated', (data) => console.log(data))
+### React hook
+```tsx
+import { useEffect } from 'react'
+import { pushpin } from '@/lib/pushpin'
+import { usePushpinChannel } from '@/sdk/react/client'
+
+function Orders() {
+  const { on, status, messages } = usePushpinChannel('orders', { client: pushpin })
+
+  useEffect(() => {
+    on('order.created', (data) => console.log('New order:', data))
+  }, [on])
+
+  return (
+    <div>
+      <div>Status: {status}</div>
+      {messages.map((msg) => (
+        <div key={msg.timestamp}>{msg.event}: {JSON.stringify(msg.data)}</div>
+      ))}
+    </div>
+  )
+}
 ```
 
 ---
@@ -147,9 +212,8 @@ All admin routes require `x-admin-secret` header.
 | DELETE | `/admin/apps/:id` | Delete an app |
 | GET | `/admin/stats` | Live connection counts (all apps) |
 | GET | `/admin/stats/:appId` | Live connection counts (one app) |
-| GET | `/admin/usage` | Monthly usage (all apps) |
-| GET | `/admin/usage/:appId` | Monthly usage (one app) |
-| GET | `/admin/logs/:appId` | Recent messages — last 7 days |
+| GET | `/admin/export` | Export all apps as JSON (for backup / restoring after an ephemeral redeploy) |
+| POST | `/admin/import` | Restore apps from a previous export |
 
 ### Webhooks
 
@@ -183,29 +247,24 @@ curl -X PATCH http://localhost:3000/admin/apps/<appId> \
 }
 ```
 
-### Monthly usage
+### Export / Import (persisting apps on App Platform)
+
+Apps live in a local SQLite file (`pushpin.db`). On a Droplet that file survives every deploy for free. On DigitalOcean App Platform (or any host that rebuilds the container from scratch on each deploy), it does **not** — the DB resets to empty. Use export/import to carry your apps across:
 
 ```bash
-curl http://localhost:3000/admin/usage/abc123 \
-  -H "x-admin-secret: your-admin-secret"
+# Before pushing a new deploy — save the current apps somewhere safe
+curl http://localhost:3000/admin/export -H "x-admin-secret: your-admin-secret" > apps-backup.json
 
-# Response:
-# {
-#   "ok": true,
-#   "usage": [
-#     { "appId": "abc123", "month": "2026-06", "messagesPublished": 1420, "connections": 83 }
-#   ]
-# }
+# After the new deploy is live — restore them
+curl -X POST http://localhost:3000/admin/import \
+  -H "Content-Type: application/json" \
+  -H "x-admin-secret: your-admin-secret" \
+  -d "{\"apps\": $(jq .apps apps-backup.json)}"
 ```
 
-### Message log
+Import **upserts by `id`** — publish/subscribe keys are preserved exactly (existing client configs keep working) and it never deletes an app just because it's missing from the payload. Re-running the same import is always safe.
 
-Returns all messages published in the last 7 days for an app. The log is pruned automatically every night at midnight.
-
-```bash
-curl http://localhost:3000/admin/logs/abc123 \
-  -H "x-admin-secret: your-admin-secret"
-```
+This is a manual step you're responsible for triggering around each deploy — nothing runs it automatically. If you'd rather not remember to do this, a Droplet needs no such workaround.
 
 ---
 
@@ -231,6 +290,7 @@ curl -X POST http://localhost:3000/publish \
 2. Create a new DO App, point at your repo
 3. Set environment variables in the DO dashboard
 4. DO handles deploys, SSL, and scaling
+5. **Important:** App Platform rebuilds the container from scratch on every deploy, wiping the local SQLite file. Export your apps before pushing and import them back after — see [Export / Import](#export--import-persisting-apps-on-app-platform) above.
 
 ### Droplet ($6/mo)
 ```bash

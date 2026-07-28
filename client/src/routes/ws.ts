@@ -1,9 +1,16 @@
-import Elysia, { t } from 'elysia'
+import type { BunRequest, Server, ServerWebSocket } from 'bun'
 import { resolveApp } from '../middleware/resolve-app'
-import { trackConnect, trackDisconnect, getStats } from '../lib/registry'
-import { trackMonthlyConnect } from '../lib/store'
+import { trackConnect, trackDisconnect } from '../lib/registry'
 import type { WireMessage } from '../types'
+import type { App } from '../lib/store'
 import { nanoid } from 'nanoid'
+
+export type WsData = {
+    subscribeKey: string
+    channel: string
+    app?: App
+    socketId?: string
+}
 
 /**
  * WebSocket endpoint
@@ -13,69 +20,67 @@ import { nanoid } from 'nanoid'
  *
  * The subscribeKey is public — safe to use in frontend code.
  * It can only receive messages, not publish.
+ *
+ * The upgrade always succeeds if a channel is present; subscribeKey validation
+ * happens in open() so the client gets an `error` message frame instead of a
+ * bare connection failure (the SDK relies on that frame to stop reconnecting).
  */
-export const wsRoute = new Elysia()
-    .ws('/app/:subscribeKey', {
-        query: t.Object({
-            channel: t.String(),
-        }),
-        params: t.Object({
-            subscribeKey: t.String(),
-        }),
+export function wsUpgradeRoute(req: BunRequest<'/app/:subscribeKey'>, server: Server) {
+    const { subscribeKey } = req.params
+    const channel = new URL(req.url).searchParams.get('channel')
+    if (!channel) {
+        return Response.json({ ok: false, error: 'Missing channel query param' }, { status: 400 })
+    }
 
-        async open(ws) {
-            const { subscribeKey } = ws.data.params
-            const { channel } = ws.data.query
+    const upgraded = server.upgrade(req, { data: { subscribeKey, channel } satisfies WsData })
+    if (!upgraded) {
+        return Response.json({ ok: false, error: 'WebSocket upgrade failed' }, { status: 400 })
+    }
+}
 
-            // Validate subscribe key
-            const app = await resolveApp(subscribeKey)
-            if (!app) {
-                ws.send(JSON.stringify({ event: 'error', data: { message: 'Invalid subscribe key' } }))
-                ws.close()
-                return
-            }
+export const websocketHandlers = {
+    open(ws: ServerWebSocket<WsData>) {
+        const { subscribeKey, channel } = ws.data
 
-            if (app.connectionLimit !== null && getStats(app.id).totalConnections > app.connectionLimit) {
-                ws.send(JSON.stringify({ event: 'error', data: { message: 'Connection limit reached' } }))
-                ws.close()
-                return
-            }
+        const app = resolveApp(subscribeKey)
+        if (!app) {
+            ws.send(JSON.stringify({ event: 'error', data: { message: 'Invalid subscribe key' } }))
+            ws.close()
+            return
+        }
 
-            // Attach app context to the ws for use in close()
-            ;(ws as any)._app = app
-            ;(ws as any)._channel = channel
-            ;(ws as any)._socketId = nanoid(12)
+        const socketId = nanoid(12)
+        ws.data.app = app
+        ws.data.socketId = socketId
 
-            // Bun's built-in pub/sub — subscribe to namespaced channel
-            const topic = `${app.id}:${channel}`
-            ws.subscribe(topic)
+        // Bun's built-in pub/sub — subscribe to namespaced channel
+        const topic = `${app.id}:${channel}`
+        ws.subscribe(topic)
 
-            trackConnect(app.id, channel)
-            trackMonthlyConnect(app.id, getStats(app.id).totalConnections)
+        trackConnect(app.id, channel)
 
-            ws.send(JSON.stringify({
-                event: 'pushpin:connected',
-                data: {
-                    socketId: (ws as any)._socketId,
-                    channel,
-                },
+        ws.send(JSON.stringify({
+            event: 'pushpin:connected',
+            data: {
+                socketId,
                 channel,
-                appId: app.id,
-                timestamp: Date.now(),
-            } satisfies WireMessage))
-        },
+            },
+            channel,
+            appId: app.id,
+            timestamp: Date.now(),
+        } satisfies WireMessage))
+    },
 
-        close(ws) {
-            const app = (ws as any)._app
-            const channel = (ws as any)._channel
-            if (!app || !channel) return
+    close(ws: ServerWebSocket<WsData>) {
+        const { app, channel } = ws.data
+        if (!app) return
 
-            const topic = `${app.id}:${channel}`
-            ws.unsubscribe(topic)
-            trackDisconnect(app.id, channel)
-        },
+        const topic = `${app.id}:${channel}`
+        ws.unsubscribe(topic)
+        trackDisconnect(app.id, channel)
+    },
 
-        message() {
-            // Clients are receive-only — ignore inbound messages
-        },
-    })
+    message() {
+        // Clients are receive-only — ignore inbound messages
+    },
+}

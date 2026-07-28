@@ -1,4 +1,4 @@
-import { sql } from './db'
+import { db } from './db'
 import { nanoid } from 'nanoid'
 
 export type App = {
@@ -8,150 +8,102 @@ export type App = {
     subscribeKey: string
     createdAt: string
     webhookUrl?: string | null
-    connectionLimit: number | null
-}
-
-export type MonthlyUsage = {
-    appId: string
-    month: string
-    messagesPublished: number
-    connections: number
-}
-
-export type MessageLogEntry = {
-    id: number
-    appId: string
-    channel: string
-    event: string
-    data: string | null
-    timestamp: number
-    delivered: number
 }
 
 // ─── Apps ─────────────────────────────────────────────────────────────────────
 
-export async function createApp(name: string, connectionLimit?: number | null): Promise<App> {
+const stmt = {
+    insert: db.prepare(`
+        INSERT INTO apps (id, name, publishKey, subscribeKey, createdAt)
+        VALUES ($id, $name, $publishKey, $subscribeKey, $createdAt)
+    `),
+    byId:         db.prepare<App, string>(`SELECT * FROM apps WHERE id = ?`),
+    byKey:        db.prepare<App, [string, string]>(`SELECT * FROM apps WHERE publishKey = ? OR subscribeKey = ?`),
+    list:         db.prepare<App, []>(`SELECT * FROM apps ORDER BY createdAt ASC`),
+    setWebhook:   db.prepare(`UPDATE apps SET webhookUrl = $webhookUrl WHERE id = $id`),
+    clearWebhook: db.prepare(`UPDATE apps SET webhookUrl = NULL WHERE id = $id`),
+    delete:       db.prepare(`DELETE FROM apps WHERE id = ?`),
+    upsert: db.prepare(`
+        INSERT INTO apps (id, name, publishKey, subscribeKey, webhookUrl, createdAt)
+        VALUES ($id, $name, $publishKey, $subscribeKey, $webhookUrl, $createdAt)
+        ON CONFLICT(id) DO UPDATE SET
+            name         = excluded.name,
+            publishKey   = excluded.publishKey,
+            subscribeKey = excluded.subscribeKey,
+            webhookUrl   = excluded.webhookUrl,
+            createdAt    = excluded.createdAt
+    `),
+}
+
+export function createApp(name: string): App {
     const app: App = {
-        id:              nanoid(16),
+        id:           nanoid(16),
         name,
-        publishKey:      `pk_${nanoid(32)}`,
-        subscribeKey:    `sk_${nanoid(32)}`,
-        createdAt:       new Date().toISOString(),
-        connectionLimit: connectionLimit ?? null,
+        publishKey:   `pk_${nanoid(32)}`,
+        subscribeKey: `sk_${nanoid(32)}`,
+        createdAt:    new Date().toISOString(),
     }
-    await sql`
-        INSERT INTO apps (id, name, publish_key, subscribe_key, connection_limit, created_at)
-        VALUES (${app.id}, ${app.name}, ${app.publishKey}, ${app.subscribeKey}, ${app.connectionLimit}, ${app.createdAt})
-    `
+    stmt.insert.run({
+        $id:           app.id,
+        $name:         app.name,
+        $publishKey:   app.publishKey,
+        $subscribeKey: app.subscribeKey,
+        $createdAt:    app.createdAt,
+    })
     return app
 }
 
-export async function getAppById(id: string): Promise<App | null> {
-    const [app] = await sql<App[]>`SELECT * FROM apps WHERE id = ${id}`
-    return app ?? null
+export function getAppById(id: string): App | null {
+    return stmt.byId.get(id) ?? null
 }
 
-export async function getAppByKey(key: string): Promise<App | null> {
-    const [app] = await sql<App[]>`SELECT * FROM apps WHERE publish_key = ${key} OR subscribe_key = ${key}`
-    return app ?? null
+export function getAppByKey(apiKey: string): App | null {
+    return stmt.byKey.get(apiKey, apiKey) ?? null
 }
 
-export async function listApps(): Promise<App[]> {
-    return sql<App[]>`SELECT * FROM apps ORDER BY created_at ASC`
+export function listApps(): App[] {
+    return stmt.list.all()
 }
 
-export async function updateApp(id: string, patch: { webhookUrl?: string | null; connectionLimit?: number | null }): Promise<App | null> {
-    const app = await getAppById(id)
+export function updateApp(id: string, patch: { webhookUrl?: string | null }): App | null {
+    const app = getAppById(id)
     if (!app) return null
 
     if (patch.webhookUrl === null) {
-        await sql`UPDATE apps SET webhook_url = NULL WHERE id = ${id}`
+        stmt.clearWebhook.run({ $id: id })
         app.webhookUrl = null
     } else if (patch.webhookUrl !== undefined) {
-        await sql`UPDATE apps SET webhook_url = ${patch.webhookUrl} WHERE id = ${id}`
+        stmt.setWebhook.run({ $webhookUrl: patch.webhookUrl, $id: id })
         app.webhookUrl = patch.webhookUrl
     }
 
-    if (patch.connectionLimit === null) {
-        await sql`UPDATE apps SET connection_limit = NULL WHERE id = ${id}`
-        app.connectionLimit = null
-    } else if (patch.connectionLimit !== undefined) {
-        await sql`UPDATE apps SET connection_limit = ${patch.connectionLimit} WHERE id = ${id}`
-        app.connectionLimit = patch.connectionLimit
-    }
-
     return app
 }
 
-export async function deleteApp(id: string): Promise<App | null> {
-    const app = await getAppById(id)
+export function deleteApp(id: string): App | null {
+    const app = getAppById(id)
     if (!app) return null
-    await sql`DELETE FROM apps WHERE id = ${id}`
+    stmt.delete.run(id)
     return app
 }
 
-// ─── Usage tracking ───────────────────────────────────────────────────────────
+// ─── Export / import (for restoring apps after an ephemeral redeploy) ─────────
 
-function currentMonth(): string {
-    return new Date().toISOString().slice(0, 7)
-}
+const importAppsTxn = db.transaction((apps: App[]) => {
+    for (const app of apps) {
+        stmt.upsert.run({
+            $id:           app.id,
+            $name:         app.name,
+            $publishKey:   app.publishKey,
+            $subscribeKey: app.subscribeKey,
+            $webhookUrl:   app.webhookUrl ?? null,
+            $createdAt:    app.createdAt,
+        })
+    }
+})
 
-export async function trackMonthlyPublish(appId: string): Promise<void> {
-    await sql`
-        INSERT INTO monthly_usage (app_id, month, messages_published, connections)
-        VALUES (${appId}, ${currentMonth()}, 1, 0)
-        ON CONFLICT (app_id, month) DO UPDATE SET messages_published = monthly_usage.messages_published + 1
-    `
-}
-
-export async function trackMonthlyConnect(appId: string, currentConnections: number): Promise<void> {
-    await sql`
-        INSERT INTO monthly_usage (app_id, month, messages_published, connections)
-        VALUES (${appId}, ${currentMonth()}, 0, ${currentConnections})
-        ON CONFLICT (app_id, month) DO UPDATE SET connections = GREATEST(monthly_usage.connections, ${currentConnections})
-    `
-}
-
-export async function getMonthlyUsage(appId: string): Promise<MonthlyUsage[]> {
-    return sql<MonthlyUsage[]>`
-        SELECT * FROM monthly_usage WHERE app_id = ${appId} ORDER BY month DESC
-    `
-}
-
-export async function getAllMonthlyUsage(): Promise<MonthlyUsage[]> {
-    return sql<MonthlyUsage[]>`SELECT * FROM monthly_usage ORDER BY app_id, month DESC`
-}
-
-// ─── Message log ──────────────────────────────────────────────────────────────
-
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
-
-export async function logMessage(entry: {
-    appId: string
-    channel: string
-    event: string
-    data: unknown
-    timestamp: number
-    delivered: number
-}): Promise<void> {
-    const data = entry.data !== null && entry.data !== undefined ? JSON.stringify(entry.data) : null
-    await sql`
-        INSERT INTO message_log (app_id, channel, event, data, timestamp, delivered)
-        VALUES (${entry.appId}, ${entry.channel}, ${entry.event}, ${data}, ${entry.timestamp}, ${entry.delivered})
-    `
-}
-
-export async function pruneOldLogs(): Promise<void> {
-    await sql`DELETE FROM message_log WHERE timestamp < ${Date.now() - SEVEN_DAYS_MS}`
-}
-
-export async function getRecentMessages(appId: string): Promise<(Omit<MessageLogEntry, 'data'> & { data: unknown })[]> {
-    const cutoff = Date.now() - SEVEN_DAYS_MS
-    const rows = await sql<MessageLogEntry[]>`
-        SELECT * FROM message_log WHERE app_id = ${appId} AND timestamp >= ${cutoff} ORDER BY timestamp DESC
-    `
-    return rows.map(row => ({
-        ...row,
-        data: row.data !== null ? JSON.parse(row.data) : null,
-    }))
+/** Upserts by id — never deletes apps that are missing from the given list. */
+export function importApps(apps: App[]): number {
+    importAppsTxn(apps)
+    return apps.length
 }
