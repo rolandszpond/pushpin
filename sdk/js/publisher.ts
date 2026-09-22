@@ -17,6 +17,20 @@
  * ])
  */
 
+import { createHmac } from 'node:crypto'
+
+/**
+ * A socketId is minted by the server as a nanoid, so it can only ever be these
+ * characters — and crucially it can never contain the ':' that separates it
+ * from the channel in the signed string. This is validated because the
+ * socketId arrives from a browser: without the check, a caller could submit
+ * `"abc:private-other"` and be handed a signature over a string that splits
+ * somewhere else entirely.
+ */
+const SOCKET_ID = /^[A-Za-z0-9_-]{6,64}$/
+
+const PRIVATE_PREFIXES = ['private-', 'presence-']
+
 type PublisherOptions = {
     serverUrl: string
     publishKey: string
@@ -88,6 +102,28 @@ export class PushpinPublisher {
         }
 
         return res.json() as Promise<BatchResult>
+    }
+
+    /**
+     * Sign a private-channel subscription for one socket.
+     *
+     * Server-side only, and the signature is the easy half. The hard half is
+     * the line you write *before* calling this: that the caller in front of
+     * you is actually entitled to this channel. Signing whatever an
+     * authenticated user asks for is the same as having no private channels at
+     * all, since anyone signed in could then request somebody else's.
+     */
+    authorize({ socketId, channel }: { socketId: string; channel: string }): { auth: string } {
+        if (!SOCKET_ID.test(socketId)) throw new Error('invalid socketId')
+        if (!PRIVATE_PREFIXES.some((prefix) => channel.startsWith(prefix))) {
+            throw new Error(`channel "${channel}" is not private`)
+        }
+
+        const digest = createHmac('sha256', this.publishKey)
+            .update(`${socketId}:${channel}`)
+            .digest('hex')
+
+        return { auth: `v1:${digest}` }
     }
 
     /** Fluent channel handle */

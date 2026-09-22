@@ -199,6 +199,148 @@ function Orders() {
 
 ---
 
+## Private channels
+
+A channel whose name starts with **`private-`** or **`presence-`** is not
+delivered to a socket until that socket proves it is allowed to listen.
+
+Everything else is unchanged. The subscribeKey is public by design — it ships
+in your frontend bundle — so it identifies the *app*, not the person holding
+it. For a channel anyone may read that is exactly right, and for one carrying
+somebody's notifications it is worth nothing, which is what these prefixes fix.
+
+(`presence-` is reserved now even though presence isn't built yet. Adding it
+later against names that had always been public would silently downgrade every
+existing `presence-*` channel on the day it shipped.)
+
+### The handshake
+
+```
+client                          pushpin                         your backend
+  │  connect ?channel=private-x   │                                  │
+  ├──────────────────────────────►│                                  │
+  │  pushpin:auth_required        │                                  │
+  │  { socketId }                 │                                  │
+  │◄──────────────────────────────┤                                  │
+  │                                                                  │
+  │  POST /pushpin/auth { socketId, channel }                        │
+  ├─────────────────────────────────────────────────────────────────►│
+  │                                              ▲ is THIS caller allowed
+  │  { auth: "v1:<hmac>" }                       │ on THIS channel?
+  │◄─────────────────────────────────────────────────────────────────┤
+  │  pushpin:subscribe { auth }   │                                  │
+  ├──────────────────────────────►│                                  │
+  │  pushpin:connected            │  ✓ verified                      │
+  │◄──────────────────────────────┤                                  │
+```
+
+The signature is over `"<socketId>:<channel>"`, keyed with the app's
+**publishKey**, hex, prefixed `v1:`:
+
+```
+auth = "v1:" + HMAC_SHA256(publishKey, socketId + ":" + channel)
+```
+
+Because `socketId` is minted fresh for every connection, a signature is good
+for exactly one socket and needs no expiry — and a reconnect is re-authorized
+automatically, because the server challenges again with a new socketId.
+
+An unanswered challenge is closed after 15s (`AUTH_TIMEOUT_MS`). A socket gets
+exactly one attempt; there is nothing to brute-force.
+
+### Authorizing (your backend)
+
+The publisher SDK signs for you:
+
+```ts
+import { PushpinPublisher } from './sdk/js/publisher'
+
+const pushpin = new PushpinPublisher({
+  serverUrl: process.env.PUSHPIN_SERVER_URL!,
+  publishKey: process.env.PUSHPIN_PUBLISH_KEY!,
+})
+
+app.post('/pushpin/auth', async (req, res) => {
+  const user = await requireUser(req)          // however you authenticate
+  const { socketId, channel } = req.body
+
+  // ⚠️ THE LINE THAT MATTERS. See the warning below.
+  if (!userMayListenTo(user, channel)) return res.status(403).json({ error: 'Forbidden' })
+
+  res.json(pushpin.authorize({ socketId, channel }))
+})
+```
+
+> **Signing any channel for any signed-in user is the same as having no private
+> channels at all.** "Is there a session" is authentication; this endpoint needs
+> *authorization* — an affirmative check that this specific caller belongs on
+> this specific channel (`private-user.${user.id}` matched exactly, a membership
+> lookup for a shared room), defaulting to deny. Without it, anyone who can log
+> in can request a signature for somebody else's channel.
+
+`authorize()` refuses a non-private channel and validates the socketId against
+`/^[A-Za-z0-9_-]{6,64}$/` — the separator in the signed string is only
+unambiguous while a socketId cannot contain `:`, and that value arrives from a
+browser.
+
+### Subscribing (frontend)
+
+Give the client an `authorizer`; it is called on every connection, with the
+socketId the server just issued.
+
+```ts
+const pushpin = new PushpinClient({
+  serverUrl: import.meta.env.VITE_PUSHPIN_URL,
+  subscribeKey: import.meta.env.VITE_PUSHPIN_SUBSCRIBE_KEY,
+  authorizer: async ({ channel, socketId }) => {
+    const res = await fetch('/pushpin/auth', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({ socketId, channel }),
+    })
+    if (!res.ok) throw Object.assign(new Error('forbidden'), { status: res.status })
+    return res.json()            // { auth: "v1:..." }
+  },
+})
+
+pushpin.channel(`private-user.${userId}`).on('notification', (data) => { /* … */ })
+```
+
+Never cache the token — the socketId changes on every connection, and
+re-fetching is what makes reconnection re-authorize for free.
+
+Behaviour worth knowing:
+
+- A `private-` channel with no authorizer never opens a socket; it logs and
+  goes straight to `unauthorized`.
+- A **403 is terminal.** Any other authorizer failure (a dropped request, a
+  cold start) is retried up to `maxAuthAttempts` (default 3) on the normal
+  backoff, because giving up on one flaky fetch leaves a dead channel with no
+  way back. `client.reauthorize(name)` clears a terminal refusal after a
+  sign-in.
+- A refused channel emits `pushpin:auth_failed` with `{ channel, error, fatal }`.
+- If the server ever subscribes a private channel *without* challenging it —
+  an old build, a rolled-back deploy — the client **refuses the subscription**
+  and logs. It fails closed rather than listening unprotected.
+
+### Close codes
+
+| Code | Meaning |
+|------|---------|
+| 4001 | Invalid or missing authorization signature |
+| 4002 | Authorization timed out |
+| 4003 | Protocol error (unexpected or malformed frame) |
+
+### Rolling this out
+
+The server is backwards compatible: nothing existing uses these prefixes, and
+an old SDK pointed at a private channel gets the `error` frame it already knows
+to stop on. **Deploy the server before any client starts using private
+channels** — a new client against an old server is the one unsafe combination,
+and it is exactly what the fail-closed guard above exists to catch.
+
+---
+
 ## Admin API
 
 All admin routes require `x-admin-secret` header.
@@ -317,3 +459,4 @@ each instance would subscribe to a shared Redis channel and broadcast locally.
 |----------|-------------|
 | `PORT` | Server port (default: 3000) |
 | `ADMIN_SECRET` | Secret for admin API routes |
+| `AUTH_TIMEOUT_MS` | How long a private-channel socket may sit unanswered (default: 15000) |

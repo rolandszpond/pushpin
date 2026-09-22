@@ -23,7 +23,13 @@ const server = Bun.serve<WsData>({
         ...adminRoutes,
     },
 
-    websocket: websocketHandlers,
+    websocket: {
+        ...websocketHandlers,
+        // Bounds the one frame a client may send (the private-channel
+        // handshake). Inbound only — `server.publish()` payloads are not
+        // affected by it.
+        maxPayloadLength: 8192,
+    },
 
     fetch(req) {
         if (req.method === 'OPTIONS') {
