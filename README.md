@@ -339,6 +339,50 @@ to stop on. **Deploy the server before any client starts using private
 channels** — a new client against an old server is the one unsafe combination,
 and it is exactly what the fail-closed guard above exists to catch.
 
+## One socket, many channels (multiplexed)
+
+Every section above opens **one WebSocket per channel**. An app that listens to
+a user's feed plus whatever the current screen shows ends up holding several.
+Connect *without* `?channel=` instead and the socket carries as many channels
+as you add to it:
+
+```ts
+import { PushpinSocket } from './sdk/js/socket'
+
+const pushpin = new PushpinSocket({ serverUrl, subscribeKey, authorizer })
+
+const off = pushpin.subscribe(`private-user.${userId}`, 'notification', (data) => { /* … */ })
+off() // the channel is left once nothing else holds it
+```
+
+Subscriptions are reference-counted per channel, so two parts of a UI holding
+the same channel share one subscription and releasing one doesn't cut off the
+other. The socket opens on the first `subscribe` and closes shortly after the
+last release (`lingerMs`, default 5s).
+
+The wire protocol, for anyone writing another client:
+
+```
+connect  /app/:subscribeKey                 (no ?channel=)
+←  pushpin:ready        { socketId }
+→  { event: 'pushpin:subscribe',   channel, auth? }
+←  pushpin:subscribed      { channel }                 — or —
+←  pushpin:subscribe_error { channel, code }           auth_failed | too_many_channels
+→  { event: 'pushpin:unsubscribe', channel }
+```
+
+- **No challenge round trip.** The socketId arrives in `ready`, so the client
+  has the channel signed first and sends `auth` with the subscribe. The signed
+  string is the same `"<socketId>:<channel>"`, so one auth endpoint serves both
+  modes.
+- **A refusal is per channel and the socket stays open**, since the other
+  channels on it are still good. Five refused signatures on one socket close
+  it with 4001, which is what bounds guessing now that one refusal doesn't.
+- Messages carry their `channel`, which is how the client routes them.
+- At most `MAX_CHANNELS_PER_SOCKET` channels per socket (default 50).
+
+`?channel=` sockets are unchanged. The two modes don't mix on one socket.
+
 ---
 
 ## Admin API
@@ -460,3 +504,4 @@ each instance would subscribe to a shared Redis channel and broadcast locally.
 | `PORT` | Server port (default: 3000) |
 | `ADMIN_SECRET` | Secret for admin API routes |
 | `AUTH_TIMEOUT_MS` | How long a private-channel socket may sit unanswered (default: 15000) |
+| `MAX_CHANNELS_PER_SOCKET` | Channels one multiplexed socket may hold (default: 50) |

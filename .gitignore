@@ -4,3 +4,5 @@ dist/
 *.log
 .DS_Store
 pushpin.db*
+apps-backup.json
+apps-backup.json.new
